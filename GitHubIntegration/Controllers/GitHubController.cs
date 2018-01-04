@@ -1,8 +1,13 @@
-﻿using Octokit;
+﻿using GitHubIntegration.Models;
+using Newtonsoft.Json;
+using Octokit;
 using Octokit.Internal;
 using System;
+using System.IO;
 using System.Linq;
+using System.Net;
 using System.Threading;
+using System.Web;
 using System.Web.Http;
 using System.Web.Http.Controllers;
 
@@ -77,7 +82,7 @@ namespace GitHubIntegration.Controllers
                         }
                     }
                 }
-                catch(Exception)
+                catch (Exception)
                 {
                     newCommitStatus.Description = "An error has occured";
                     newCommitStatus.State = CommitState.Error;
@@ -92,8 +97,7 @@ namespace GitHubIntegration.Controllers
 
         private string GetTargetUrlFromBatchId_(string batchId)
         {
-            string accountId = GetAccountIddFromBatchId_(batchId);
-            return string.Format("https://eyes.applitools.com/app/batches/{0}?accountId={1}", batchId, accountId);
+            return string.Format("https://eyes.applitools.com/app/batches/{0}", batchId);
         }
 
         private bool VisualTestsPassed_(string batchId)
@@ -101,14 +105,27 @@ namespace GitHubIntegration.Controllers
             return true; // TODO - change!
         }
 
-        private string GetAccountIddFromBatchId_(string batchId)
+        public string Get(string uri)
         {
-            return "ACCOUNT_ID"; // TODO - change!
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(uri);
+            request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+
+            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+            using (Stream stream = response.GetResponseStream())
+            using (StreamReader reader = new StreamReader(stream))
+            {
+                return reader.ReadToEnd();
+            }
         }
 
+        // TODO - change!
         private string GetServerBatchIdFromStartInfoBatchId_(string reference)
         {
-            return reference; // TODO - change!
+            string credentials = (string)Configuration.Properties["APPLITOOLS_SERVER_CREDENTIALS"];
+            string url = string.Format("https://eyes.applitools.com/api/sessions/batches/batchId/{0}?format=json&{1}", reference, credentials);
+            string json = Get(url);
+            BatchIdData batchIdData = JsonConvert.DeserializeObject<BatchIdData>(json);
+            return batchIdData.BatchId;
         }
 
         private IHttpActionResult ProcessPullRequest_(PullRequestEventPayload pr)
