@@ -1,11 +1,15 @@
 ﻿using GitHubIntegration.Models;
+using Jose;
 using Newtonsoft.Json;
 using Octokit;
+using Octokit.Helpers;
 using Octokit.Internal;
 using System;
+using System.Configuration;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Web;
 using System.Web.Http;
@@ -17,6 +21,9 @@ namespace GitHubIntegration.Controllers
     {
         private GitHubClient client_;
         private SimpleJsonSerializer serializer_;
+        private string clientId_ = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_CLIENT_ID");
+        private string clientSecret_ = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_CLIENT_SECRET");
+        private Application app_ = null;
 
         protected override void Initialize(HttpControllerContext controllerContext)
         {
@@ -25,13 +32,25 @@ namespace GitHubIntegration.Controllers
             serializer_ = new SimpleJsonSerializer();
             client_ = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"));
             string personalAccessToken = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_PAT");
-            var tokenAuth = new Credentials(personalAccessToken);
-            client_.Credentials = tokenAuth;
-        }
 
-        public void Get()
-        {
+            string pemFilePath = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_PEM_FILE_PATH");
+            string pemData = File.ReadAllText(pemFilePath);
 
+            long unixTimeInSeconds = DateTimeOffset.UtcNow.ToUnixTime();
+            object payload = new {
+                iat = unixTimeInSeconds,
+                exp = unixTimeInSeconds + 600,
+                iss = 7820
+            };
+
+            RSACryptoServiceProvider rsa = new RSACryptoServiceProvider();
+            rsa.FromXmlString(pemData);
+
+            string token = JWT.Encode(payload, rsa, JwsAlgorithm.RS256);
+
+            client_.Credentials = new Credentials(token, AuthenticationType.Bearer);
+
+            app_ = client_.Application.Create().Result;
         }
 
         public IHttpActionResult Post()
@@ -56,8 +75,10 @@ namespace GitHubIntegration.Controllers
             if (sep.Context.StartsWith("continuous-integration"))
             {
                 IApiConnection apiConnection = new ApiConnection(client_.Connection);
-                CommitStatusClient csc = new CommitStatusClient(apiConnection);
-                NewCommitStatus newCommitStatus = new NewCommitStatus();
+                NewCommitStatus newCommitStatus = new NewCommitStatus
+                {
+                    Context = "tests/applitools"
+                };
                 try
                 {
                     string batchId = GetServerBatchIdFromStartInfoBatchId_(sep.Sha);
@@ -70,14 +91,15 @@ namespace GitHubIntegration.Controllers
                     }
                     else
                     {
-                        if (VisualTestsPassed_(batchId))
+                        BatchData batchData = GetBatchResultsSummary_(batchId);
+                        if (batchData.UnresolvedCount == 0 && batchData.FailedCount == 0)
                         {
                             newCommitStatus.Description = "All tests passed";
                             newCommitStatus.State = CommitState.Success;
                         }
                         else
                         {
-                            newCommitStatus.Description = "Tests failed";
+                            newCommitStatus.Description = batchData.ToString();
                             newCommitStatus.State = CommitState.Failure;
                         }
                     }
@@ -87,7 +109,7 @@ namespace GitHubIntegration.Controllers
                     newCommitStatus.Description = "An error has occured";
                     newCommitStatus.State = CommitState.Error;
                 }
-
+                CommitStatusClient csc = new CommitStatusClient(apiConnection);
                 CommitStatus commitStatus = csc.Create(sep.Repository.Id, sep.Sha, newCommitStatus).Result;
 
                 return Ok();
@@ -98,11 +120,6 @@ namespace GitHubIntegration.Controllers
         private string GetTargetUrlFromBatchId_(string batchId)
         {
             return string.Format("https://eyes.applitools.com/app/batches/{0}", batchId);
-        }
-
-        private bool VisualTestsPassed_(string batchId)
-        {
-            return true; // TODO - change!
         }
 
         public string Get(string uri)
@@ -121,11 +138,22 @@ namespace GitHubIntegration.Controllers
         // TODO - change!
         private string GetServerBatchIdFromStartInfoBatchId_(string reference)
         {
-            string credentials = (string)Configuration.Properties["APPLITOOLS_SERVER_CREDENTIALS"];
+            string credentials = ConfigurationManager.AppSettings["APPLITOOLS_SERVER_CREDENTIALS"];
             string url = string.Format("https://eyes.applitools.com/api/sessions/batches/batchId/{0}?format=json&{1}", reference, credentials);
             string json = Get(url);
             BatchIdData batchIdData = JsonConvert.DeserializeObject<BatchIdData>(json);
             return batchIdData.BatchId;
+        }
+
+        // TODO - change!
+        private BatchData GetBatchResultsSummary_(string batchId)
+        {
+            string credentials = ConfigurationManager.AppSettings["APPLITOOLS_SERVER_CREDENTIALS"];
+            string url = string.Format("https://eyes.applitools.com/api/sessions/batches?format=json&count=1&limit=%3D%3D+{0}&{1}", batchId, credentials);
+            string json = Get(url);
+            BatchResultsSummary batchResultsSummary = JsonConvert.DeserializeObject<BatchResultsSummary>(json);
+            BatchData batchData = batchResultsSummary.Batches[0];
+            return batchData;
         }
 
         private IHttpActionResult ProcessPullRequest_(PullRequestEventPayload pr)
