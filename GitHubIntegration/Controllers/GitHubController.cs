@@ -5,13 +5,13 @@ using Octokit;
 using Octokit.Helpers;
 using Octokit.Internal;
 using System;
+using System.Collections.Generic;
 using System.Configuration;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Security.Cryptography;
 using System.Threading;
-using System.Web;
 using System.Web.Http;
 using System.Web.Http.Controllers;
 
@@ -23,23 +23,23 @@ namespace GitHubIntegration.Controllers
         private SimpleJsonSerializer serializer_;
         private string clientId_ = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_CLIENT_ID");
         private string clientSecret_ = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_CLIENT_SECRET");
-        private Application app_ = null;
+        private IReadOnlyList<Installation> installations_ = null;
 
         protected override void Initialize(HttpControllerContext controllerContext)
         {
             base.Initialize(controllerContext);
 
             serializer_ = new SimpleJsonSerializer();
-            client_ = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"));
-            string personalAccessToken = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_PAT");
+            //string personalAccessToken = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_PAT");
 
             string pemFilePath = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_PEM_FILE_PATH");
             string pemData = File.ReadAllText(pemFilePath);
 
             long unixTimeInSeconds = DateTimeOffset.UtcNow.ToUnixTime();
-            object payload = new {
+            object payload = new
+            {
                 iat = unixTimeInSeconds,
-                exp = unixTimeInSeconds + 600,
+                exp = unixTimeInSeconds + 300,
                 iss = 7820
             };
 
@@ -48,10 +48,31 @@ namespace GitHubIntegration.Controllers
 
             string token = JWT.Encode(payload, rsa, JwsAlgorithm.RS256);
 
-            client_.Credentials = new Credentials(token, AuthenticationType.Bearer);
+            client_ = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"))
+            {
+                Credentials = new Credentials(token, AuthenticationType.Bearer)
+            };
 
-            app_ = client_.Application.Create().Result;
+            installations_ = client_.Installations.GetAll().Result;
         }
+
+        //public IHttpActionResult Authorize(string code, string state)
+        //{
+        //    if (String.IsNullOrEmpty(code))
+        //        return Redirect("Index");
+
+        //    var session = HttpContext.Current.Session;
+
+        //    var expectedState = session["CSRF:State"] as string;
+        //    if (state != expectedState) throw new InvalidOperationException("SECURITY FAIL!");
+        //    session["CSRF:State"] = null;
+
+        //    var request = new OauthTokenRequest(clientId_, clientSecret_, code);
+        //    var token = client_.Oauth.CreateAccessToken(request).Result;
+        //    session["OAuthToken"] = token.AccessToken;
+
+        //    return Redirect("Index");
+        //}
 
         public IHttpActionResult Post()
         {
@@ -72,9 +93,8 @@ namespace GitHubIntegration.Controllers
 
         private IHttpActionResult ProcessStatusRequest_(StatusEventPayload sep)
         {
-            if (sep.Context.StartsWith("continuous-integration"))
+            if (sep.Context.StartsWith("continuous-integration/") || sep.Context.StartsWith("ci/"))
             {
-                IApiConnection apiConnection = new ApiConnection(client_.Connection);
                 NewCommitStatus newCommitStatus = new NewCommitStatus
                 {
                     Context = "tests/applitools"
@@ -109,6 +129,24 @@ namespace GitHubIntegration.Controllers
                     newCommitStatus.Description = "An error has occured";
                     newCommitStatus.State = CommitState.Error;
                 }
+
+                if (installations_.Count == 0)
+                {
+                    return InternalServerError();
+                }
+
+                var userId = sep.Repository.Owner.Id;
+                var installation = installations_.Where(inst => inst.Account.Id == userId).FirstOrDefault();
+                int installationId = installation.Id;
+                AccessToken accessToken = client_.Installations.AccessTokens.Create(installationId).Result;
+
+                GitHubClient installationsClient = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"))
+                {
+                    Credentials = new Credentials(accessToken.Token)
+                };
+
+                IApiConnection apiConnection = new ApiConnection(installationsClient.Connection);
+
                 CommitStatusClient csc = new CommitStatusClient(apiConnection);
                 CommitStatus commitStatus = csc.Create(sep.Repository.Id, sep.Sha, newCommitStatus).Result;
 
@@ -160,7 +198,9 @@ namespace GitHubIntegration.Controllers
         {
             if (pr.Action == "opened" || pr.Action == "reopened")
             {
-                IApiConnection apiConnection = new ApiConnection(client_.Connection);
+                GitHubClient client = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"));
+
+                IApiConnection apiConnection = new ApiConnection(client.Connection);
                 CommitStatusClient csc = new CommitStatusClient(apiConnection);
                 string reference = pr.PullRequest.Head.Sha;
 
