@@ -135,24 +135,29 @@ namespace GitHubIntegration.Controllers
                     return InternalServerError();
                 }
 
-                var userId = sep.Repository.Owner.Id;
-                var installation = installations_.Where(inst => inst.Account.Id == userId).FirstOrDefault();
-                int installationId = installation.Id;
-                AccessToken accessToken = client_.Installations.AccessTokens.Create(installationId).Result;
-
-                GitHubClient installationsClient = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"))
-                {
-                    Credentials = new Credentials(accessToken.Token)
-                };
-
-                IApiConnection apiConnection = new ApiConnection(installationsClient.Connection);
-
-                CommitStatusClient csc = new CommitStatusClient(apiConnection);
-                CommitStatus commitStatus = csc.Create(sep.Repository.Id, sep.Sha, newCommitStatus).Result;
+                UpdateCommitStatus(sep.Repository, sep.Sha, newCommitStatus);
 
                 return Ok();
             }
             return BadRequest();
+        }
+
+        private void UpdateCommitStatus(Repository rep, string sha, NewCommitStatus newCommitStatus)
+        {
+            var userId = rep.Owner.Id;
+            var installation = installations_.Where(inst => inst.Account.Id == userId).FirstOrDefault();
+            int installationId = installation.Id;
+            AccessToken accessToken = client_.Installations.AccessTokens.Create(installationId).Result;
+
+            GitHubClient installationsClient = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"))
+            {
+                Credentials = new Credentials(accessToken.Token)
+            };
+
+            IApiConnection apiConnection = new ApiConnection(installationsClient.Connection);
+
+            CommitStatusClient csc = new CommitStatusClient(apiConnection);
+            CommitStatus commitStatus = csc.Create(rep.Id, sha, newCommitStatus).Result;
         }
 
         private string GetTargetUrlFromBatchId_(string batchId)
@@ -198,29 +203,23 @@ namespace GitHubIntegration.Controllers
         {
             if (pr.Action == "opened" || pr.Action == "reopened")
             {
-                GitHubClient client = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"));
+                string sha = pr.PullRequest.Head.Sha;
 
-                IApiConnection apiConnection = new ApiConnection(client.Connection);
-                CommitStatusClient csc = new CommitStatusClient(apiConnection);
-                string reference = pr.PullRequest.Head.Sha;
-
-                CommitStatus pendingCommitStatus = csc.Create(pr.Repository.Id, reference,
-                   new NewCommitStatus
-                   {
-                       State = CommitState.Pending,
-                       Description = "The test is running",
-                       TargetUrl = "https://eyes.applitools.com"
-                   }).Result;
+                UpdateCommitStatus(pr.Repository, sha, new NewCommitStatus
+                {
+                    State = CommitState.Pending,
+                    Description = "The test is running",
+                    TargetUrl = "https://eyes.applitools.com"
+                });
 
                 Thread.Sleep(2000);
 
-                CommitStatus resultCommitStatus = csc.Create(pr.Repository.Id, reference,
-                    new NewCommitStatus
-                    {
-                        State = CommitState.Success,
-                        Description = "The test passed",
-                        TargetUrl = "https://eyes.applitools.com"
-                    }).Result;
+                UpdateCommitStatus(pr.Repository, sha, new NewCommitStatus
+                {
+                    State = CommitState.Success,
+                    Description = "The test passed",
+                    TargetUrl = "https://eyes.applitools.com"
+                });
 
                 return Ok();
             }
