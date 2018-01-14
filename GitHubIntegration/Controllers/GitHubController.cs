@@ -11,6 +11,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using System.Web.Http;
 using System.Web.Http.Controllers;
@@ -24,6 +25,7 @@ namespace GitHubIntegration.Controllers
         private string clientId_ = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_CLIENT_ID");
         private string clientSecret_ = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_CLIENT_SECRET");
         private IReadOnlyList<Installation> installations_ = null;
+        private string secretToken_ = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_SECRET_WEBHOOK_TOKEN");
 
         protected override void Initialize(HttpControllerContext controllerContext)
         {
@@ -78,6 +80,10 @@ namespace GitHubIntegration.Controllers
         {
             string json = Request.Content.ReadAsStringAsync().Result;
             string gitHubEvent = Request.Headers.GetValues("X-Github-Event").First();
+            if (!VerifySigniture_(json))
+            {
+                return Unauthorized();
+            }
             switch (gitHubEvent)
             {
                 case "pull_request":
@@ -89,6 +95,35 @@ namespace GitHubIntegration.Controllers
                     return ProcessStatusRequest_(sep);
             }
             return BadRequest();
+        }
+
+        public static string ByteArrayToString(byte[] ba)
+        {
+            StringBuilder hex = new StringBuilder(ba.Length * 2);
+            foreach (byte b in ba)
+                hex.AppendFormat("{0:x2}", b);
+            return hex.ToString();
+        }
+
+        private bool VerifySigniture_(string payloadBody)
+        {
+            if (secretToken_ == null)
+            {
+                return true;
+            }
+            string gitHubSig = Request.Headers.GetValues("X-Hub-Signature").FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(gitHubSig))
+            {
+                byte[] key = Encoding.UTF8.GetBytes(secretToken_);
+                byte[] payload = Encoding.UTF8.GetBytes(payloadBody);
+                string signature = null; 
+                using (HMAC hmac = new HMACSHA1(key))
+                {
+                    signature = "sha1=" + ByteArrayToString(hmac.ComputeHash(payload));
+                }
+                return signature.Equals(gitHubSig,StringComparison.OrdinalIgnoreCase);
+            }
+            return false;
         }
 
         private IHttpActionResult ProcessStatusRequest_(StatusEventPayload sep)
