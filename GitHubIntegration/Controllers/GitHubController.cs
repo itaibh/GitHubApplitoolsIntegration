@@ -116,12 +116,12 @@ namespace GitHubIntegration.Controllers
             {
                 byte[] key = Encoding.UTF8.GetBytes(secretToken_);
                 byte[] payload = Encoding.UTF8.GetBytes(payloadBody);
-                string signature = null; 
+                string signature = null;
                 using (HMAC hmac = new HMACSHA1(key))
                 {
                     signature = "sha1=" + ByteArrayToString(hmac.ComputeHash(payload));
                 }
-                return signature.Equals(gitHubSig,StringComparison.OrdinalIgnoreCase);
+                return signature.Equals(gitHubSig, StringComparison.OrdinalIgnoreCase);
             }
             return false;
         }
@@ -137,7 +137,15 @@ namespace GitHubIntegration.Controllers
                 try
                 {
                     string batchId = GetServerBatchIdFromStartInfoBatchId_(sep.Sha);
-                    newCommitStatus.TargetUrl = GetTargetUrlFromBatchId_(batchId);
+                    if (batchId == null)
+                    {
+                        newCommitStatus.Description = "No tests available";
+                        newCommitStatus.State = CommitState.Success;
+                    }
+                    else
+                    {
+                        newCommitStatus.TargetUrl = GetTargetUrlFromBatchId_(batchId);
+                    }
 
                     if (sep.State.Value == CommitState.Pending)
                     {
@@ -147,7 +155,12 @@ namespace GitHubIntegration.Controllers
                     else
                     {
                         BatchData batchData = GetBatchResultsSummary_(batchId);
-                        if (batchData.UnresolvedCount == 0 && batchData.FailedCount == 0)
+                        if (batchData == null)
+                        {
+                            newCommitStatus.Description = "No tests available";
+                            newCommitStatus.State = CommitState.Success;
+                        }
+                        else if (batchData.UnresolvedCount == 0 && batchData.FailedCount == 0)
                         {
                             newCommitStatus.Description = "All tests passed";
                             newCommitStatus.State = CommitState.Success;
@@ -220,6 +233,10 @@ namespace GitHubIntegration.Controllers
             string url = string.Format("https://eyes.applitools.com/api/sessions/batches/batchId/{0}?format=json&{1}", reference, credentials);
             string json = Get(url);
             BatchIdData batchIdData = JsonConvert.DeserializeObject<BatchIdData>(json);
+            if (batchIdData == null)
+            {
+                return null;
+            }
             return batchIdData.BatchId;
         }
 
@@ -230,6 +247,11 @@ namespace GitHubIntegration.Controllers
             string url = string.Format("https://eyes.applitools.com/api/sessions/batches?format=json&count=1&limit=%3D%3D+{0}&{1}", batchId, credentials);
             string json = Get(url);
             BatchResultsSummary batchResultsSummary = JsonConvert.DeserializeObject<BatchResultsSummary>(json);
+            if (batchResultsSummary == null || batchResultsSummary.Batches == null || batchResultsSummary.Batches.Length == 0)
+            {
+                return null;
+            }
+
             BatchData batchData = batchResultsSummary.Batches[0];
             return batchData;
         }
