@@ -128,7 +128,7 @@ namespace GitHubIntegration.Controllers
 
         private IHttpActionResult ProcessStatusRequest_(StatusEventPayload sep)
         {
-            if (sep.Context.StartsWith("continuous-integration/") || sep.Context.StartsWith("ci/"))
+            if (sep.Context.StartsWith("continuous-integration/") || sep.Context.StartsWith("ci/") || sep.Context == "semaphoreci")
             {
                 NewCommitStatus newCommitStatus = new NewCommitStatus
                 {
