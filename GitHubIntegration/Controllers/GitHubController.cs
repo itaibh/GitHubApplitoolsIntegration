@@ -22,10 +22,12 @@ namespace GitHubIntegration.Controllers
     {
         private GitHubClient client_;
         private SimpleJsonSerializer serializer_;
-        private string clientId_ = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_CLIENT_ID");
-        private string clientSecret_ = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_CLIENT_SECRET");
+        //private string clientId_ = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_CLIENT_ID");
+        //private string clientSecret_ = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_CLIENT_SECRET");
         private IReadOnlyList<Installation> installations_ = null;
         private string secretToken_ = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_SECRET_WEBHOOK_TOKEN");
+        //private int githubApplicationId = 7820;
+        private int githubApplicationId_ = 8362;
 
         protected override void Initialize(HttpControllerContext controllerContext)
         {
@@ -42,7 +44,7 @@ namespace GitHubIntegration.Controllers
             {
                 iat = unixTimeInSeconds,
                 exp = unixTimeInSeconds + 300,
-                iss = 7820
+                iss = githubApplicationId_
             };
 
             RSACryptoServiceProvider rsa = new RSACryptoServiceProvider();
@@ -55,7 +57,7 @@ namespace GitHubIntegration.Controllers
                 Credentials = new Credentials(token, AuthenticationType.Bearer)
             };
 
-            installations_ = client_.Installations.GetAll().Result;
+            installations_ = client_.Installation.GetAll().Result;
         }
 
         //public IHttpActionResult Authorize(string code, string state)
@@ -195,7 +197,7 @@ namespace GitHubIntegration.Controllers
             var userId = rep.Owner.Id;
             var installation = installations_.Where(inst => inst.Account.Id == userId).FirstOrDefault();
             int installationId = installation.Id;
-            AccessToken accessToken = client_.Installations.AccessTokens.Create(installationId).Result;
+            AccessToken accessToken = client_.Installation.AccessTokens.Create(installationId).Result;
 
             GitHubClient installationsClient = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"))
             {
@@ -262,19 +264,36 @@ namespace GitHubIntegration.Controllers
             {
                 string sha = pr.PullRequest.Head.Sha;
 
-                UpdateCommitStatus(pr.Repository, sha, new NewCommitStatus
-                {
-                    State = CommitState.Pending,
-                    Description = "The test is running",
-                    TargetUrl = "https://eyes.applitools.com"
-                });
+                //UpdateCommitStatus(pr.Repository, sha, new NewCommitStatus
+                //{
+                //    State = CommitState.Pending,
+                //    Description = "The test is running",
+                //    TargetUrl = "https://eyes.applitools.com"
+                //});
 
-                Thread.Sleep(2000);
+                //Thread.Sleep(2000);
+
+                //UpdateCommitStatus(pr.Repository, sha, new NewCommitStatus
+                //{
+                //    State = CommitState.Success,
+                //    Description = "The test passed",
+                //    TargetUrl = "https://eyes.applitools.com"
+                //});
+
+                return Ok();
+            }
+            else if (pr.Action == "closed" && pr.PullRequest.Merged)
+            {
+                string mergeSha = pr.PullRequest.MergeCommitSha;
+                GitReference baseRef = pr.PullRequest.Base;
+                GitReference headRef = pr.PullRequest.Head;
+
+                string sha = headRef.Sha;
 
                 UpdateCommitStatus(pr.Repository, sha, new NewCommitStatus
                 {
                     State = CommitState.Success,
-                    Description = "The test passed",
+                    Description = "The test branch merged",
                     TargetUrl = "https://eyes.applitools.com"
                 });
 
