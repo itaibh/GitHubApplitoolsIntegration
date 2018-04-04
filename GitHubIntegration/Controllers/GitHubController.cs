@@ -7,12 +7,14 @@ using Octokit.Internal;
 using System;
 using System.Collections.Generic;
 using System.Configuration;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Web;
 using System.Web.Http;
 using System.Web.Http.Controllers;
 
@@ -22,9 +24,9 @@ namespace GitHubIntegration.Controllers
     {
         private GitHubClient client_;
         private SimpleJsonSerializer serializer_;
-        //private string clientId_ = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_CLIENT_ID");
-        //private string clientSecret_ = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_CLIENT_SECRET");
-        private IReadOnlyList<Installation> installations_ = null;
+        private string clientId_ = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_CLIENT_ID");
+        private string clientSecret_ = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_CLIENT_SECRET");
+        //private IReadOnlyList<Installation> installations_ = null;
         private string secretToken_ = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_SECRET_WEBHOOK_TOKEN");
         //private int githubApplicationId = 7820;
         private int githubApplicationId_ = 8362;
@@ -34,7 +36,14 @@ namespace GitHubIntegration.Controllers
             base.Initialize(controllerContext);
 
             serializer_ = new SimpleJsonSerializer();
-            //string personalAccessToken = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_PAT");
+
+            string personalAccessToken = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_PAT");
+            client_ = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"))
+            {
+                Credentials = new Credentials(personalAccessToken, AuthenticationType.Oauth)
+            };
+
+            /*
 
             string pemFilePath = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_PEM_FILE_PATH");
             string pemData = File.ReadAllText(pemFilePath);
@@ -56,27 +65,10 @@ namespace GitHubIntegration.Controllers
             {
                 Credentials = new Credentials(token, AuthenticationType.Bearer)
             };
+            */
 
-            installations_ = client_.Installation.GetAll().Result;
+            //installations_ = client_.GitHubApps.GetAllInstallationsForCurrent().Result;
         }
-
-        //public IHttpActionResult Authorize(string code, string state)
-        //{
-        //    if (String.IsNullOrEmpty(code))
-        //        return Redirect("Index");
-
-        //    var session = HttpContext.Current.Session;
-
-        //    var expectedState = session["CSRF:State"] as string;
-        //    if (state != expectedState) throw new InvalidOperationException("SECURITY FAIL!");
-        //    session["CSRF:State"] = null;
-
-        //    var request = new OauthTokenRequest(clientId_, clientSecret_, code);
-        //    var token = client_.Oauth.CreateAccessToken(request).Result;
-        //    session["OAuthToken"] = token.AccessToken;
-
-        //    return Redirect("Index");
-        //}
 
         public IHttpActionResult Post()
         {
@@ -88,6 +80,10 @@ namespace GitHubIntegration.Controllers
             }
             switch (gitHubEvent)
             {
+                case "push":
+                    PushEventPayload pep = serializer_.Deserialize<PushEventPayload>(json);
+                    return ProcessPushRequest_(pep);
+
                 case "pull_request":
                     PullRequestEventPayload prep = serializer_.Deserialize<PullRequestEventPayload>(json);
                     return ProcessPullRequest_(prep);
@@ -97,6 +93,46 @@ namespace GitHubIntegration.Controllers
                     return ProcessStatusRequest_(sep);
             }
             return BadRequest();
+        }
+        private string GenerateSecurityString()
+        {
+            using (RandomNumberGenerator rng = new RNGCryptoServiceProvider())
+            {
+                byte[] tokenData = new byte[32];
+                rng.GetBytes(tokenData);
+
+                string token = Convert.ToBase64String(tokenData);
+                token = token.Replace('+', '-').Replace('/', '_').Replace('=', '.');
+                return token;
+            }
+        }
+
+        [HttpGet]
+        public IHttpActionResult Register()
+        {
+            string state = GenerateSecurityString();
+
+            HttpContext.Current.Session["CSRF:State"] = state;
+            return Redirect(string.Format("https://github.com/login/oauth/authorize?client_id={0}&state={1}", clientId_, state));
+        }
+
+        [HttpGet]
+        public IHttpActionResult Auth(string code, string state)
+        {
+            if (String.IsNullOrEmpty(code))
+                return Redirect("Index");
+
+            var session = HttpContext.Current.Session;
+
+            var expectedState = session["CSRF:State"] as string;
+            if (state != expectedState) throw new InvalidOperationException("SECURITY FAIL!");
+            session["CSRF:State"] = null;
+
+            var request = new OauthTokenRequest(clientId_, clientSecret_, code);
+            var token = client_.Oauth.CreateAccessToken(request).Result;
+            session["OAuthToken"] = token.AccessToken;
+
+            return Redirect("Index");
         }
 
         public static string ByteArrayToString(byte[] ba)
@@ -126,6 +162,70 @@ namespace GitHubIntegration.Controllers
                 return signature.Equals(gitHubSig, StringComparison.OrdinalIgnoreCase);
             }
             return false;
+        }
+
+        private IHttpActionResult ProcessPushRequest_(PushEventPayload pep)
+        {
+            IApiConnection apiConnection = CreateConnection_(pep);
+            IRepositoryBranchesClient branchesClient = new RepositoryBranchesClient(apiConnection);
+            IReadOnlyList<Branch> branches = branchesClient.GetAll(pep.Repository.Id).Result;
+            Branch parentBranch = GetParentBranch_(pep, apiConnection, branches);
+
+            return Ok();
+        }
+
+        private static Branch GetParentBranch_(PushEventPayload pep, IApiConnection apiConnection, IReadOnlyList<Branch> branches)
+        {
+            var branchesDict = new Dictionary<string, Branch>();
+            foreach (Branch branch in branches)
+            {
+                branchesDict.Add(branch.Commit.Sha, branch);
+            }
+
+            IEnumerable<CommitPayload> commits = pep.Commits;
+            ICommitsClient commitsClient = new CommitsClient(apiConnection);
+
+            return GetParentBranch_(pep, branchesDict, commits, commitsClient, TimeSpan.FromSeconds(5));
+        }
+
+        private static Branch GetParentBranch_(PushEventPayload pep, Dictionary<string, Branch> branchesDict, IEnumerable<CommitPayload> commits, ICommitsClient commitsClient, TimeSpan timeout)
+        {
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            CommitPayload commitPayload = commits.Last();
+            string commitSha = commitPayload.Id;
+            Commit commit = commitsClient.Get(pep.Repository.Id, commitSha).Result;
+
+            Queue<GitReference> parentGitReferences = new Queue<GitReference>();
+            HashSet<GitReference> parentsHashSet = new HashSet<GitReference>();
+            if (commit.Parents != null)
+            {
+                foreach (GitReference gitRef in commit.Parents)
+                {
+                    if (!parentsHashSet.Contains(gitRef))
+                    {
+                        parentGitReferences.Enqueue(gitRef);
+                        parentsHashSet.Add(gitRef);
+                    }
+                }
+            }
+
+            while (parentGitReferences.Count > 0 /*&& stopwatch.Elapsed < timeout*/)
+            {
+                GitReference gitRef = parentGitReferences.Dequeue();
+                Commit gitCommit = commitsClient.Get(pep.Repository.Id, gitRef.Sha).Result;
+
+                if (branchesDict.TryGetValue(gitCommit.Sha, out Branch branch) && branch != null)
+                {
+                    return branch;
+                }
+
+                foreach (GitReference parent in gitCommit.Parents)
+                {
+                    parentGitReferences.Enqueue(parent);
+                }
+            }
+
+            return null;
         }
 
         private IHttpActionResult ProcessStatusRequest_(StatusEventPayload sep)
@@ -179,35 +279,55 @@ namespace GitHubIntegration.Controllers
                     newCommitStatus.Description = "An error has occured";
                     newCommitStatus.State = CommitState.Error;
                 }
-
+                /*
                 if (installations_.Count == 0)
                 {
                     return InternalServerError();
                 }
-
-                UpdateCommitStatus(sep.Repository, sep.Sha, newCommitStatus);
+                */
+                UpdateCommitStatus(sep.Repository, sep.Sha, newCommitStatus, sep);
 
                 return Ok();
             }
             return BadRequest();
         }
 
-        private void UpdateCommitStatus(Repository rep, string sha, NewCommitStatus newCommitStatus)
+        private void UpdateCommitStatus(Repository rep, string sha, NewCommitStatus newCommitStatus, ActivityPayload payload)
         {
-            var userId = rep.Owner.Id;
-            var installation = installations_.Where(inst => inst.Account.Id == userId).FirstOrDefault();
-            int installationId = installation.Id;
-            AccessToken accessToken = client_.Installation.AccessTokens.Create(installationId).Result;
-
-            GitHubClient installationsClient = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"))
+            /*if (!installationId.HasValue)
             {
-                Credentials = new Credentials(accessToken.Token)
-            };
+                var userId = rep.Owner.Id;
+                var installation = installations_.Where(inst => inst.Account.Id == userId).FirstOrDefault();
+                installationId = installation.Id;
+            }*/
 
-            IApiConnection apiConnection = new ApiConnection(installationsClient.Connection);
+            //AccessToken accessToken = payload.Installation.CreateAccessToken(client_).Result;
+            IApiConnection apiConnection = CreateConnection_(payload);
 
             CommitStatusClient csc = new CommitStatusClient(apiConnection);
             CommitStatus commitStatus = csc.Create(rep.Id, sha, newCommitStatus).Result;
+        }
+
+        private IApiConnection CreateConnection_(ActivityPayload payload)
+        {
+            IGitHubClient client;
+            if (payload.Installation != null)
+            {
+                AccessToken accessToken = client_.GitHubApps.CreateInstallationToken(payload.Installation.Id).Result;
+
+                GitHubClient installationsClient = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"))
+                {
+                    Credentials = new Credentials(accessToken.Token)
+                };
+
+                client = installationsClient;
+            }
+            else
+            {
+                client = client_;
+            }
+            IApiConnection apiConnection = new ApiConnection(client.Connection);
+            return apiConnection;
         }
 
         private string GetTargetUrlFromBatchId_(string batchId)
@@ -260,25 +380,29 @@ namespace GitHubIntegration.Controllers
 
         private IHttpActionResult ProcessPullRequest_(PullRequestEventPayload pr)
         {
+            //long installationId = pr.Installation.Id;
+
             if (pr.Action == "opened" || pr.Action == "reopened")
             {
                 string sha = pr.PullRequest.Head.Sha;
 
-                //UpdateCommitStatus(pr.Repository, sha, new NewCommitStatus
-                //{
-                //    State = CommitState.Pending,
-                //    Description = "The test is running",
-                //    TargetUrl = "https://eyes.applitools.com"
-                //});
+                UpdateCommitStatus(pr.Repository, sha, new NewCommitStatus
+                {
+                    State = CommitState.Pending,
+                    Description = "The test is running",
+                    TargetUrl = "https://eyes.applitools.com"
+                },
+                pr);
 
-                //Thread.Sleep(2000);
+                Thread.Sleep(2000);
 
-                //UpdateCommitStatus(pr.Repository, sha, new NewCommitStatus
-                //{
-                //    State = CommitState.Success,
-                //    Description = "The test passed",
-                //    TargetUrl = "https://eyes.applitools.com"
-                //});
+                UpdateCommitStatus(pr.Repository, sha, new NewCommitStatus
+                {
+                    State = CommitState.Success,
+                    Description = "The test passed",
+                    TargetUrl = "https://eyes.applitools.com"
+                },
+                pr);
 
                 return Ok();
             }
@@ -292,10 +416,11 @@ namespace GitHubIntegration.Controllers
 
                 UpdateCommitStatus(pr.Repository, sha, new NewCommitStatus
                 {
-                    State = CommitState.Success,
-                    Description = "The test branch merged",
+                    State = CommitState.Failure,
+                    Description = "The test branch failed to merge",
                     TargetUrl = "https://eyes.applitools.com"
-                });
+                },
+                pr);
 
                 return Ok();
             }
