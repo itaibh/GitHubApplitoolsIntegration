@@ -11,6 +11,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -20,7 +22,7 @@ using System.Web.Http.Controllers;
 
 namespace GitHubIntegration.Controllers
 {
-    public class GitHubController : ApiController
+    public class GitHubController : System.Web.Http.ApiController
     {
         private GitHubClient client_;
         private SimpleJsonSerializer serializer_;
@@ -38,7 +40,7 @@ namespace GitHubIntegration.Controllers
             serializer_ = new SimpleJsonSerializer();
 
             string personalAccessToken = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_PAT");
-            client_ = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"))
+            client_ = new GitHubClient(new Octokit.ProductHeaderValue("ApplitoolsIntegration"))
             {
                 Credentials = new Credentials(personalAccessToken, AuthenticationType.Oauth)
             };
@@ -119,8 +121,15 @@ namespace GitHubIntegration.Controllers
         [HttpGet]
         public IHttpActionResult Auth(string code, string state)
         {
+            StringBuilder html = new StringBuilder("<html><head><title>Register with GitHub</title></head>");
+            HttpResponseMessage responseMessage = new HttpResponseMessage(HttpStatusCode.OK);
+
             if (String.IsNullOrEmpty(code))
-                return Redirect("Index");
+            {
+                html.Append("<body><h1>Error</h1><p>No github oauth app code was given.</p></body></html>");
+                responseMessage.Content = new StringContent(html.ToString(), Encoding.UTF8, "text/html");
+                return new System.Web.Http.Results.ResponseMessageResult(responseMessage);
+            }
 
             var session = HttpContext.Current.Session;
 
@@ -132,7 +141,19 @@ namespace GitHubIntegration.Controllers
             var token = client_.Oauth.CreateAccessToken(request).Result;
             session["OAuthToken"] = token.AccessToken;
 
-            return Redirect("Index");
+            //1 fetch repositories list
+            //2 setup webhook for a repository
+
+            html.AppendLine("<body><h1>Repositories</h1><ul>");
+            IReadOnlyList<Repository> repositories = client_.Repository.GetAllForCurrent().Result;
+            foreach(Repository r in repositories)
+            {
+                html.Append("<li><a href=\"").Append(r.Url).Append("\">").Append(r.Name).AppendLine("</a></li>");
+            }
+            html.Append("</body></html>");
+
+            responseMessage.Content = new StringContent(html.ToString(), Encoding.UTF8, "text/html");
+            return new System.Web.Http.Results.ResponseMessageResult(responseMessage);
         }
 
         public static string ByteArrayToString(byte[] ba)
@@ -315,7 +336,7 @@ namespace GitHubIntegration.Controllers
             {
                 AccessToken accessToken = client_.GitHubApps.CreateInstallationToken(payload.Installation.Id).Result;
 
-                GitHubClient installationsClient = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"))
+                GitHubClient installationsClient = new GitHubClient(new Octokit.ProductHeaderValue("ApplitoolsIntegration"))
                 {
                     Credentials = new Credentials(accessToken.Token)
                 };
