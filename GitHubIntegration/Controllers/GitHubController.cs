@@ -1,8 +1,6 @@
 ﻿using GitHubIntegration.Models;
-using Jose;
 using Newtonsoft.Json;
 using Octokit;
-using Octokit.Helpers;
 using Octokit.Internal;
 using System;
 using System.Collections.Generic;
@@ -12,7 +10,6 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
-using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -22,7 +19,7 @@ using System.Web.Http.Controllers;
 
 namespace GitHubIntegration.Controllers
 {
-    public class GitHubController : System.Web.Http.ApiController
+    public class GitHubController : ApiController
     {
         private GitHubClient client_;
         private SimpleJsonSerializer serializer_;
@@ -32,6 +29,8 @@ namespace GitHubIntegration.Controllers
         private string secretToken_ = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_SECRET_WEBHOOK_TOKEN");
         //private int githubApplicationId = 7820;
         private int githubApplicationId_ = 8362;
+
+        private readonly UriBuilder baseBuilder = new UriBuilder() { Scheme = "https", Host = "e195ad92.ngrok.io", Path = "/api/github/" };
 
         protected override void Initialize(HttpControllerContext controllerContext)
         {
@@ -119,7 +118,7 @@ namespace GitHubIntegration.Controllers
         }
 
         [HttpGet]
-        public IHttpActionResult Auth(string code, string state)
+        public IHttpActionResult Authorize(string code, string state)
         {
             StringBuilder html = new StringBuilder("<html><head><title>Register with GitHub</title></head>");
             HttpResponseMessage responseMessage = new HttpResponseMessage(HttpStatusCode.OK);
@@ -134,7 +133,7 @@ namespace GitHubIntegration.Controllers
             var session = HttpContext.Current.Session;
 
             var expectedState = session["CSRF:State"] as string;
-            if (state != expectedState) throw new InvalidOperationException("SECURITY FAIL!");
+            if (expectedState != null && state != expectedState) throw new InvalidOperationException("SECURITY FAIL!");
             session["CSRF:State"] = null;
 
             var request = new OauthTokenRequest(clientId_, clientSecret_, code);
@@ -143,16 +142,39 @@ namespace GitHubIntegration.Controllers
 
             //1 fetch repositories list
             //2 setup webhook for a repository
-
             html.AppendLine("<body><h1>Repositories</h1><ul>");
             IReadOnlyList<Repository> repositories = client_.Repository.GetAllForCurrent().Result;
-            foreach(Repository r in repositories)
+            UriBuilder builder = new UriBuilder(baseBuilder.ToString());
+            foreach (Repository r in repositories)
             {
-                html.Append("<li><a href=\"").Append(r.Url).Append("\">").Append(r.Name).AppendLine("</a></li>");
+                builder.Path = "/api/github/CreateWebhook";
+                builder.Query = "repositoryId=" + r.Id;
+
+                html.Append("<li><a href=\"").Append(builder.Uri).Append("\">").Append(r.Owner.Name ?? r.Owner.Login).Append(" / ").Append(r.Name).AppendLine("</a></li>");
             }
             html.Append("</body></html>");
 
             responseMessage.Content = new StringContent(html.ToString(), Encoding.UTF8, "text/html");
+            return new System.Web.Http.Results.ResponseMessageResult(responseMessage);
+        }
+
+        [HttpGet]
+        public IHttpActionResult CreateWebhook(long repositoryId)
+        {
+            HttpResponseMessage responseMessage = new HttpResponseMessage();
+            var config = new Dictionary<string, string> { };
+
+            UriBuilder builder = new UriBuilder(baseBuilder.ToString());
+            NewRepositoryWebHook hook = new NewRepositoryWebHook("web", config, builder.ToString())
+            {
+                Active = true,
+                Secret = clientSecret_,
+                Events = new string[] { "push", "pull_request" },
+                ContentType = WebHookContentType.Json
+            };
+
+            RepositoryHook webhook = client_.Repository.Hooks.Create(repositoryId, hook).Result;
+
             return new System.Web.Http.Results.ResponseMessageResult(responseMessage);
         }
 
