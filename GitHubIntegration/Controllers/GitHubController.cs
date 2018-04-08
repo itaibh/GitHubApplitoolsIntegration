@@ -139,7 +139,7 @@ namespace GitHubIntegration.Controllers
             var request = new OauthTokenRequest(clientId_, clientSecret_, code);
             var token = client_.Oauth.CreateAccessToken(request).Result;
 
-            string tokenFilePath = Path.Combine("tokens", clientId_);
+            string tokenFilePath = Path.Combine(@"c:\temp\githubitegration\applitools\", "tokens", clientId_);
             if (!Directory.Exists(tokenFilePath))
             {
                 Directory.CreateDirectory(tokenFilePath);
@@ -170,7 +170,7 @@ namespace GitHubIntegration.Controllers
         public IHttpActionResult CreateWebhook(long repositoryId)
         {
             string login = client_.User.Current().Result.Login;
-            string tokenFilePath = Path.Combine("tokens", clientId_, login + ".token");
+            string tokenFilePath = Path.Combine(@"c:\temp\githubitegration\applitools\", "tokens", clientId_, login + ".token");
             if (!File.Exists(tokenFilePath))
             {
                 return InternalServerError();
@@ -388,7 +388,7 @@ namespace GitHubIntegration.Controllers
             else
             {
                 string login = client_.User.Current().Result.Login;
-                string tokenFilePath = Path.Combine("tokens", clientId_, login + ".token");
+                string tokenFilePath = Path.Combine(@"c:\temp\githubitegration\applitools\", "tokens", clientId_, login + ".token");
                 if (File.Exists(tokenFilePath))
                 {
                     string oauthToken = File.ReadAllText(tokenFilePath);
