@@ -28,9 +28,9 @@ namespace GitHubIntegration.Controllers
         //private IReadOnlyList<Installation> installations_ = null;
         private string secretToken_ = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_SECRET_WEBHOOK_TOKEN");
         //private int githubApplicationId = 7820;
-        private int githubApplicationId_ = 8362;
+        //private int githubApplicationId_ = 8362;
 
-        private readonly UriBuilder baseBuilder = new UriBuilder() { Scheme = "https", Host = "e195ad92.ngrok.io", Path = "/api/github/" };
+        private readonly UriBuilder baseBuilder = new UriBuilder() { Scheme = "https", Host = "f4f07e17.ngrok.io", Path = "/api/github/" };
 
         protected override void Initialize(HttpControllerContext controllerContext)
         {
@@ -127,7 +127,7 @@ namespace GitHubIntegration.Controllers
             {
                 html.Append("<body><h1>Error</h1><p>No github oauth app code was given.</p></body></html>");
                 responseMessage.Content = new StringContent(html.ToString(), Encoding.UTF8, "text/html");
-                return new System.Web.Http.Results.ResponseMessageResult(responseMessage);
+                return ResponseMessage(responseMessage);
             }
 
             var session = HttpContext.Current.Session;
@@ -139,10 +139,17 @@ namespace GitHubIntegration.Controllers
             var request = new OauthTokenRequest(clientId_, clientSecret_, code);
             var token = client_.Oauth.CreateAccessToken(request).Result;
 
-            session["OAuthToken"] = token.AccessToken;
+            string tokenFilePath = Path.Combine("tokens", clientId_);
+            if (!Directory.Exists(tokenFilePath))
+            {
+                Directory.CreateDirectory(tokenFilePath);
+            }
 
-            //1 fetch repositories list
-            //2 setup webhook for a repository
+            string login = client_.User.Current().Result.Login;
+            tokenFilePath = Path.Combine(tokenFilePath, login + ".token");
+            File.WriteAllText(tokenFilePath, token.AccessToken);
+            //session["OAuthToken"] = token.AccessToken;
+
             html.AppendLine("<body><h1>Repositories</h1><ul>");
             IReadOnlyList<Repository> repositories = client_.Repository.GetAllForCurrent().Result;
             UriBuilder builder = new UriBuilder(baseBuilder.ToString());
@@ -156,12 +163,19 @@ namespace GitHubIntegration.Controllers
             html.Append("</body></html>");
 
             responseMessage.Content = new StringContent(html.ToString(), Encoding.UTF8, "text/html");
-            return new System.Web.Http.Results.ResponseMessageResult(responseMessage);
+            return ResponseMessage(responseMessage);
         }
 
         [HttpGet]
         public IHttpActionResult CreateWebhook(long repositoryId)
         {
+            string login = client_.User.Current().Result.Login;
+            string tokenFilePath = Path.Combine("tokens", clientId_, login + ".token");
+            if (!File.Exists(tokenFilePath))
+            {
+                return InternalServerError();
+            }
+
             HttpResponseMessage responseMessage = new HttpResponseMessage();
             var config = new Dictionary<string, string> { };
 
@@ -176,12 +190,12 @@ namespace GitHubIntegration.Controllers
 
             IGitHubClient client = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"))
             {
-                Credentials = new Credentials("062b523691afd9c822b7e49b0447a77f1a86db9b")
+                Credentials = new Credentials(File.ReadAllText(tokenFilePath))
             };
 
             RepositoryHook webhook = client.Repository.Hooks.Create(repositoryId, hook).Result;
 
-            return new System.Web.Http.Results.ResponseMessageResult(responseMessage);
+            return ResponseMessage(responseMessage);
         }
 
         public static string ByteArrayToString(byte[] ba)
@@ -373,15 +387,22 @@ namespace GitHubIntegration.Controllers
             }
             else
             {
-                //var session = HttpContext.Current.Session;
-                //string oauthToken = session["OAuthToken"] as string; // TODO - don't get the oauth token from the session since it won't be there. load if from DB or something.
-                string oauthToken = "062b523691afd9c822b7e49b0447a77f1a86db9b";
-                if (oauthToken != null)
+                string login = client_.User.Current().Result.Login;
+                string tokenFilePath = Path.Combine("tokens", clientId_, login + ".token");
+                if (File.Exists(tokenFilePath))
                 {
-                    client = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"))
+                    string oauthToken = File.ReadAllText(tokenFilePath);
+                    if (oauthToken != null)
                     {
-                        Credentials = new Credentials(oauthToken)
-                    };
+                        client = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"))
+                        {
+                            Credentials = new Credentials(oauthToken)
+                        };
+                    }
+                    else
+                    {
+                        client = client_;
+                    }
                 }
                 else
                 {
