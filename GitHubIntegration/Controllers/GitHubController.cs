@@ -39,7 +39,7 @@ namespace GitHubIntegration.Controllers
             serializer_ = new SimpleJsonSerializer();
 
             string personalAccessToken = Environment.GetEnvironmentVariable("GITHUB_APPLITOOLS_PAT");
-            client_ = new GitHubClient(new Octokit.ProductHeaderValue("ApplitoolsIntegration"))
+            client_ = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"))
             {
                 Credentials = new Credentials(personalAccessToken, AuthenticationType.Oauth)
             };
@@ -114,7 +114,7 @@ namespace GitHubIntegration.Controllers
             string state = GenerateSecurityString();
 
             HttpContext.Current.Session["CSRF:State"] = state;
-            return Redirect(string.Format("https://github.com/login/oauth/authorize?client_id={0}&state={1}", clientId_, state));
+            return Redirect(string.Format("https://github.com/login/oauth/authorize?client_id={0}&state={1}&scope=user,repo", clientId_, state));
         }
 
         [HttpGet]
@@ -138,6 +138,7 @@ namespace GitHubIntegration.Controllers
 
             var request = new OauthTokenRequest(clientId_, clientSecret_, code);
             var token = client_.Oauth.CreateAccessToken(request).Result;
+
             session["OAuthToken"] = token.AccessToken;
 
             //1 fetch repositories list
@@ -169,11 +170,16 @@ namespace GitHubIntegration.Controllers
             {
                 Active = true,
                 Secret = clientSecret_,
-                Events = new string[] { "push", "pull_request" },
+                Events = new string[] { "push", "pull_request", "status" },
                 ContentType = WebHookContentType.Json
             };
 
-            RepositoryHook webhook = client_.Repository.Hooks.Create(repositoryId, hook).Result;
+            IGitHubClient client = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"))
+            {
+                Credentials = new Credentials("062b523691afd9c822b7e49b0447a77f1a86db9b")
+            };
+
+            RepositoryHook webhook = client.Repository.Hooks.Create(repositoryId, hook).Result;
 
             return new System.Web.Http.Results.ResponseMessageResult(responseMessage);
         }
@@ -188,14 +194,14 @@ namespace GitHubIntegration.Controllers
 
         private bool VerifySigniture_(string payloadBody)
         {
-            if (secretToken_ == null)
+            if (clientSecret_ == null)
             {
                 return true;
             }
             string gitHubSig = Request.Headers.GetValues("X-Hub-Signature").FirstOrDefault();
             if (!string.IsNullOrWhiteSpace(gitHubSig))
             {
-                byte[] key = Encoding.UTF8.GetBytes(secretToken_);
+                byte[] key = Encoding.UTF8.GetBytes(clientSecret_);
                 byte[] payload = Encoding.UTF8.GetBytes(payloadBody);
                 string signature = null;
                 using (HMAC hmac = new HMACSHA1(key))
@@ -212,7 +218,7 @@ namespace GitHubIntegration.Controllers
             IApiConnection apiConnection = CreateConnection_(pep);
             IRepositoryBranchesClient branchesClient = new RepositoryBranchesClient(apiConnection);
             IReadOnlyList<Branch> branches = branchesClient.GetAll(pep.Repository.Id).Result;
-            Branch parentBranch = GetParentBranch_(pep, apiConnection, branches);
+            //Branch parentBranch = GetParentBranch_(pep, apiConnection, branches);
 
             return Ok();
         }
@@ -358,7 +364,7 @@ namespace GitHubIntegration.Controllers
             {
                 AccessToken accessToken = client_.GitHubApps.CreateInstallationToken(payload.Installation.Id).Result;
 
-                GitHubClient installationsClient = new GitHubClient(new Octokit.ProductHeaderValue("ApplitoolsIntegration"))
+                GitHubClient installationsClient = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"))
                 {
                     Credentials = new Credentials(accessToken.Token)
                 };
@@ -367,7 +373,20 @@ namespace GitHubIntegration.Controllers
             }
             else
             {
-                client = client_;
+                //var session = HttpContext.Current.Session;
+                //string oauthToken = session["OAuthToken"] as string; // TODO - don't get the oauth token from the session since it won't be there. load if from DB or something.
+                string oauthToken = "062b523691afd9c822b7e49b0447a77f1a86db9b";
+                if (oauthToken != null)
+                {
+                    client = new GitHubClient(new ProductHeaderValue("ApplitoolsIntegration"))
+                    {
+                        Credentials = new Credentials(oauthToken)
+                    };
+                }
+                else
+                {
+                    client = client_;
+                }
             }
             IApiConnection apiConnection = new ApiConnection(client.Connection);
             return apiConnection;
